@@ -1,5 +1,14 @@
 #ifndef TRACE_H
 #define TRACE_H
 
-void trace(char* dst);
+#include <stdint.h>
+
+struct Options {
+    char* destination;
+    uint8_t maxTTL;
+    uint8_t timeout;
+};
+
+void trace(struct Options options);
+
 #endif

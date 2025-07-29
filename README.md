@@ -2,5 +2,5 @@
 ```
 ./build.sh
 
-sudo ./build/myTraceroute *target*
+sudo ./build/myTraceroute
 ```

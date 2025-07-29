@@ -2,30 +2,32 @@
 #include "trace.h"
 
 #include <netinet/ip_icmp.h>
-#include <time.h>
+#include <sys/time.h>
 #include <arpa/inet.h>
 #include <netdb.h>
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
 
-#define MAX_HOPS 30
 #define PACKET_SIZE 64
 #define WORD_LENGTH_IN_BYTES 16
 
+// TODO: RTT CALC
+// UPDATE ERROR HANDLING
+
 static void send_packet(const int sock, const struct icmphdr* icmp_hdr, const struct sockaddr_in* destAddr);
 static void recv_packet(const int sock, char* packet, struct sockaddr_in* replyAddr);
-static int create_socket();
+static int create_socket(struct Options options);
 static uint16_t calculate_checksum(void* buffer, uint16_t length);
 static void fill_header(struct icmphdr* icmph, const uint8_t ttl);
 static struct sockaddr_in resolve_host(const char* dst);
 
-void trace(char* dest) {
-    int sock = create_socket();
+void trace(struct Options options) {
+    int sock = create_socket(options);
     struct icmphdr icmp_hdr;
-    struct sockaddr_in destAddr = resolve_host(dest);
+    struct sockaddr_in destAddr = resolve_host(options.destination);
 
-    for (uint8_t ttl = 1; ttl <= MAX_HOPS; ttl++) {
+    for (uint8_t ttl = 1; ttl <= options.maxTTL; ttl++) {
         struct sockaddr_in replyAddr;
         char packet[PACKET_SIZE];
 
@@ -43,7 +45,7 @@ void trace(char* dest) {
     close(sock);
 }
 
-void fill_header(struct icmphdr* icmph, const uint8_t ttl) {
+static void fill_header(struct icmphdr* icmph, const uint8_t ttl) {
     if (icmph == NULL) {
         perror("ICMP header pointer is null");
     }
@@ -57,7 +59,7 @@ void fill_header(struct icmphdr* icmph, const uint8_t ttl) {
     icmph->checksum = calculate_checksum(icmph, sizeof(*icmph));
 }
 
-uint16_t calculate_checksum(void* buffer, uint16_t length) {
+static uint16_t calculate_checksum(void* buffer, uint16_t length) {
     uint16_t* wordPointer = buffer;
     uint32_t sum = 0;
 
@@ -75,7 +77,7 @@ uint16_t calculate_checksum(void* buffer, uint16_t length) {
     return (uint16_t)~sum;
 }
 
-struct sockaddr_in resolve_host(const char* dest) {
+static struct sockaddr_in resolve_host(const char* dest) {
     struct addrinfo hints = {0}, *result;
     hints.ai_family = AF_INET;
     hints.ai_socktype = SOCK_STREAM;
@@ -90,7 +92,7 @@ struct sockaddr_in resolve_host(const char* dest) {
     return destAddr;
 }
 
-void send_packet(const int sock, const struct icmphdr* icmp_hdr, const struct sockaddr_in* destAddr) {
+static void send_packet(const int sock, const struct icmphdr* icmp_hdr, const struct sockaddr_in* destAddr) {
     int pack_bytes = sendto(sock, icmp_hdr, sizeof(*icmp_hdr), 0,
                             (struct sockaddr*)destAddr, sizeof(*destAddr));
 
@@ -100,7 +102,7 @@ void send_packet(const int sock, const struct icmphdr* icmp_hdr, const struct so
     }
 }
 
-void recv_packet(const int socketFileDescriptor, char* packet, struct sockaddr_in* replyAddress) {
+static void recv_packet(const int socketFileDescriptor, char* packet, struct sockaddr_in* replyAddress) {
     socklen_t addrLen = sizeof(*replyAddress);
     if (recvfrom(socketFileDescriptor, packet, PACKET_SIZE, 0, (struct sockaddr*)replyAddress,
                  &addrLen) == -1) {
@@ -108,10 +110,14 @@ void recv_packet(const int socketFileDescriptor, char* packet, struct sockaddr_i
     }
 }
 
-int create_socket() {
+static int create_socket(struct Options options) {
     const int sock = socket(AF_INET, SOCK_RAW, IPPROTO_ICMP);
     if (sock == -1) {
         perror("Socket creation failed");
     }
+
+    const struct timeval timeout = {options.timeout, 0};
+    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+
     return sock;
 }
