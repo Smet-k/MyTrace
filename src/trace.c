@@ -1,144 +1,117 @@
-#include <arpa/inet.h>
-#include <linux/errqueue.h>
-#include <netinet/in.h>
+#define _POSIX_C_SOURCE 200112L
+#include "trace.h"
+
 #include <netinet/ip_icmp.h>
+#include <time.h>
+#include <arpa/inet.h>
+#include <netdb.h>
 #include <stdio.h>
 #include <string.h>
-#include <sys/time.h>
 #include <unistd.h>
 
+#define MAX_HOPS 30
 #define PACKET_SIZE 64
-#define TTL_MAX 30
-#define BUFFERSIZE 1024
+#define WORD_LENGTH_IN_BYTES 16
 
-void send_icmp_packet(const int sock, const struct icmphdr* icmp_hdr, const struct sockaddr_in* destAddr);
-void receive_icmp_packet(const int sock, char* packet, struct sockaddr_in* replyAddr);
-int create_socket();
-void read_errors(struct icmphdr icmph, struct sockaddr_in addr, int sock);
+static void send_packet(const int sock, const struct icmphdr* icmp_hdr, const struct sockaddr_in* destAddr);
+static void recv_packet(const int sock, char* packet, struct sockaddr_in* replyAddr);
+static int create_socket();
+static uint16_t calculate_checksum(void* buffer, uint16_t length);
+static void fill_header(struct icmphdr* icmph, const uint8_t ttl);
+static struct sockaddr_in resolve_host(const char* dst);
 
-void trace(struct in_addr* dst) {
-    const int sock = create_socket();
+void trace(char* dest) {
+    int sock = create_socket();
     struct icmphdr icmp_hdr;
-    struct sockaddr_in destAddr;
+    struct sockaddr_in destAddr = resolve_host(dest);
 
-    memset(&destAddr, 0, sizeof destAddr);
-    destAddr.sin_family = AF_INET;
-    destAddr.sin_port = htons(33434);
-    destAddr.sin_addr = *dst;
-
-    memset(&icmp_hdr, 0, sizeof(icmp_hdr));
-    icmp_hdr.type = ICMP_ECHO;
-    icmp_hdr.un.echo.id = (uint16_t)getpid();
-    icmp_hdr.code = 0;
-
-    for (uint8_t ttl = 1; ttl <= TTL_MAX; ttl++) {
+    for (uint8_t ttl = 1; ttl <= MAX_HOPS; ttl++) {
         struct sockaddr_in replyAddr;
         char packet[PACKET_SIZE];
 
+        fill_header(&icmp_hdr, ttl);
         setsockopt(sock, IPPROTO_IP, IP_TTL, &ttl, sizeof(ttl));
-        icmp_hdr.un.echo.sequence = ttl;
 
-        send_icmp_packet(sock, &icmp_hdr, &destAddr);
-        receive_icmp_packet(sock, packet, &replyAddr);
+        send_packet(sock, &icmp_hdr, &destAddr);
+        recv_packet(sock, packet, &replyAddr);
 
-        read_errors(icmp_hdr, destAddr, sock);
-
-        // printf("%s\n", inet_ntoa(replyAddr.sin_addr));
-        if (replyAddr.sin_addr.s_addr == destAddr.sin_addr.s_addr){
-            printf("%s\n", inet_ntoa(replyAddr.sin_addr));
+        printf("%s\n", inet_ntoa(replyAddr.sin_addr));
+        if (replyAddr.sin_addr.s_addr == destAddr.sin_addr.s_addr) {
             break;
         }
     }
     close(sock);
 }
 
-void send_icmp_packet(const int sock, const struct icmphdr* icmp_hdr,
-                      const struct sockaddr_in* destAddr) {
-    if (sendto(sock, icmp_hdr, sizeof(*icmp_hdr), 0,
-               (struct sockaddr*)destAddr, sizeof(*destAddr)) == -1) {
-        perror("Packet send failed");
+void fill_header(struct icmphdr* icmph, const uint8_t ttl) {
+    if (icmph == NULL) {
+        perror("ICMP header pointer is null");
+    }
+
+    memset(icmph, 0, sizeof(*icmph));
+
+    icmph->type = ICMP_ECHO;
+    icmph->code = 0;
+    icmph->un.echo.id = (uint16_t)getpid();
+    icmph->un.echo.sequence = ttl;
+    icmph->checksum = calculate_checksum(icmph, sizeof(*icmph));
+}
+
+uint16_t calculate_checksum(void* buffer, uint16_t length) {
+    uint16_t* wordPointer = buffer;
+    uint32_t sum = 0;
+
+    for (sum = 0; length > 1; length -= 2) {
+        sum += *wordPointer++;
+    }
+
+    if (length == 1) {
+        sum += *(uint8_t*)wordPointer;
+    }
+
+    sum = (sum >> WORD_LENGTH_IN_BYTES) + (sum & 0xFFFF);
+    sum += sum >> WORD_LENGTH_IN_BYTES;
+
+    return (uint16_t)~sum;
+}
+
+struct sockaddr_in resolve_host(const char* dest) {
+    struct addrinfo hints = {0}, *result;
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_STREAM;
+
+    if (getaddrinfo(dest, NULL, &hints, &result) != 0) {
+        perror("Failed to resolve host");
+    }
+
+    const struct sockaddr_in destAddr = *(struct sockaddr_in*)result->ai_addr;
+    freeaddrinfo(result);
+
+    return destAddr;
+}
+
+void send_packet(const int sock, const struct icmphdr* icmp_hdr, const struct sockaddr_in* destAddr) {
+    int pack_bytes = sendto(sock, icmp_hdr, sizeof(*icmp_hdr), 0,
+                            (struct sockaddr*)destAddr, sizeof(*destAddr));
+
+    if (pack_bytes < 0) {
+        perror("Sendto");
+        return;
     }
 }
 
-void receive_icmp_packet(const int sock, char* packet, struct sockaddr_in* replyAddr) {
-    socklen_t addrLen = sizeof(*replyAddr);
-    if (recvfrom(sock, packet, PACKET_SIZE, 0, (struct sockaddr*)replyAddr, &addrLen) == -1) {
-        // perror("Packet receive failed");
+void recv_packet(const int socketFileDescriptor, char* packet, struct sockaddr_in* replyAddress) {
+    socklen_t addrLen = sizeof(*replyAddress);
+    if (recvfrom(socketFileDescriptor, packet, PACKET_SIZE, 0, (struct sockaddr*)replyAddress,
+                 &addrLen) == -1) {
+        perror("Recvfrom");
     }
 }
 
 int create_socket() {
-    const int sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_ICMP);
-    const struct timeval timeout = {2, 0};  // temporary default timeout
+    const int sock = socket(AF_INET, SOCK_RAW, IPPROTO_ICMP);
     if (sock == -1) {
         perror("Socket creation failed");
     }
-    int on = IP_PMTUDISC_DO;
-    setsockopt(sock, SOL_IP, IP_MTU_DISCOVER, &on, sizeof(on));
-    setsockopt(sock, SOL_IP, IP_RECVERR, &on, sizeof(on));
-    setsockopt(sock, SOL_IP, IP_RECVTTL, &on, sizeof(on));
-    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
     return sock;
-}
-
-void read_errors(struct icmphdr icmph, struct sockaddr_in addr, int sock) {
-    struct iovec iov;
-    struct msghdr msg;                  /* Message header */
-    struct cmsghdr* cmsg;               /* Control related data */
-    struct sock_extended_err* sock_err; /* Struct describing the error */
-    char buffer[BUFFERSIZE];
-    int return_status = 0;
-    iov.iov_base = &icmph;
-    iov.iov_len = sizeof(icmph);
-
-    msg.msg_name = (void*)&addr;
-    msg.msg_namelen = sizeof(addr);
-    msg.msg_iov = &iov;
-    msg.msg_iovlen = 1;
-    msg.msg_flags = 0;
-    msg.msg_control = buffer;
-    msg.msg_controllen = sizeof(buffer);
-
-    return_status = recvmsg(sock, &msg, MSG_ERRQUEUE);
-    if (return_status >= 0) {
-        /* Control messages are always accessed via some macros
-         * http://www.kernel.org/doc/man-pages/online/pages/man3/cmsg.3.html
-         */
-        for (cmsg = CMSG_FIRSTHDR(&msg); cmsg; cmsg = CMSG_NXTHDR(&msg, cmsg)) {
-            if (cmsg->cmsg_level == SOL_IP) {
-                /* IP LEVEL*/
-                if (cmsg->cmsg_type == IP_RECVERR || cmsg->cmsg_type == IP_RECVTTL) {
-                    char rej_addr[INET_ADDRSTRLEN];
-                    struct sockaddr_in* rejection_addr;
-                    if (cmsg->cmsg_type == IP_RECVTTL) {
-                        fprintf(stderr, "We got IP_RECVTTL message\n");
-                    }
-                    sock_err = (struct sock_extended_err*)CMSG_DATA(cmsg);
-
-                    if (sock_err->ee_origin == SO_EE_ORIGIN_ICMP && (sock_err->ee_type == ICMP_TIME_EXCEEDED || sock_err->ee_type == ICMP_DEST_UNREACH)) {
-                        switch (sock_err->ee_code) {
-                            case ICMP_EXC_TTL:
-                                rejection_addr = (struct sockaddr_in*)(sock_err + 1);
-                                inet_ntop(AF_INET, &(rejection_addr->sin_addr), rej_addr, INET_ADDRSTRLEN);
-                                printf("%s\n", rej_addr);
-                                break;
-                            case ICMP_DEST_UNREACH:
-                                rejection_addr = (struct sockaddr_in*)(sock_err + 1);
-                                inet_ntop(AF_INET, &(rejection_addr->sin_addr), rej_addr, INET_ADDRSTRLEN);
-                                printf("%s\n", rej_addr);
-                                break;
-                            default:
-                                printf("Unhandled Error:\n");
-                                printf("\tError code: %d \n", sock_err->ee_code);
-                                printf("\tError type: %d \n", sock_err->ee_type);
-                                break;
-                                /* Handle all other cases. Find more errors :
-                                 * http://lxr.linux.no/linux+v3.5/include/linux/icmp.h#L39
-                                 */
-                        }
-                    }
-                }
-            }
-        }
-    }
 }
