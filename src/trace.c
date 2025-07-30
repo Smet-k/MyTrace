@@ -1,4 +1,3 @@
-#define _POSIX_C_SOURCE 200112L
 #include "trace.h"
 
 #include <netinet/ip_icmp.h>
@@ -12,21 +11,19 @@
 #define PACKET_SIZE 64
 #define WORD_LENGTH_IN_BYTES 16
 
-// TODO: RTT CALC
-// UPDATE ERROR HANDLING
-
 static void send_packet(const int sock, const struct icmphdr* icmp_hdr, const struct sockaddr_in* destAddr);
 static void recv_packet(const int sock, char* packet, struct sockaddr_in* replyAddr);
 static int create_socket(struct Options options);
 static uint16_t calculate_checksum(void* buffer, uint16_t length);
 static void fill_header(struct icmphdr* icmph, const uint8_t ttl);
 static struct sockaddr_in resolve_host(const char* dst);
+static double calc_time_diff_ms(struct timeval *start, struct timeval *end);
 
 void trace(struct Options options) {
     int sock = create_socket(options);
     struct icmphdr icmp_hdr;
     struct sockaddr_in destAddr = resolve_host(options.destination);
-
+    struct timeval startTime, endTime;
     for (uint8_t ttl = 1; ttl <= options.maxTTL; ttl++) {
         struct sockaddr_in replyAddr;
         char packet[PACKET_SIZE];
@@ -34,10 +31,12 @@ void trace(struct Options options) {
         fill_header(&icmp_hdr, ttl);
         setsockopt(sock, IPPROTO_IP, IP_TTL, &ttl, sizeof(ttl));
 
+        gettimeofday(&startTime, NULL);
         send_packet(sock, &icmp_hdr, &destAddr);
         recv_packet(sock, packet, &replyAddr);
+        gettimeofday(&endTime, NULL);
 
-        printf("%s\n", inet_ntoa(replyAddr.sin_addr));
+        printf("%3d\t%-15s\t%3.fms\n",ttl ,inet_ntoa(replyAddr.sin_addr), calc_time_diff_ms(&startTime, &endTime));
         if (replyAddr.sin_addr.s_addr == destAddr.sin_addr.s_addr) {
             break;
         }
@@ -120,4 +119,10 @@ static int create_socket(struct Options options) {
     setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
 
     return sock;
+}
+
+static double calc_time_diff_ms(struct timeval *start, struct timeval *end){
+    double start_ms = (start->tv_sec * 1000.0) + (start->tv_usec / 1000.0);
+    double end_ms = (end->tv_sec * 1000.0) + (end->tv_usec / 1000.0);
+    return end_ms - start_ms;
 }
