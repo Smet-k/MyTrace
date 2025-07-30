@@ -57,7 +57,8 @@ static struct Options parse_options(const uint8_t argc, char* argv[]) {
                 options.timeout = timeout;
                 break;
             case 'h':
-                printf("Usage: sudo .build/myTraceroute [-m maxttl] [-t timeout] destination\n");
+                printf("Usage: myTraceroute [-m maxttl] [-t timeout] destination\n");
+                exit(EXIT_SUCCESS);
                 break;
             default:
                 printf("Invalid argument. use -h for help.");
@@ -66,7 +67,8 @@ static struct Options parse_options(const uint8_t argc, char* argv[]) {
     }
 
     if (optind == argc) {
-        perror("Destination is required!");
+        printf("Usage: myTraceroute [-m maxttl] [-t timeout] destination\n");
+        exit(EXIT_FAILURE);
     }
     options.destination = argv[optind];
 
