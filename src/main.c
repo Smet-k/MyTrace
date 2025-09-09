@@ -1,10 +1,10 @@
-#include "trace.h"
-
-#include <unistd.h>
 #include <getopt.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <unistd.h>
+
+#include "trace.h"
 
 static struct Options parse_options(const uint8_t argc, char* argv[]);
 

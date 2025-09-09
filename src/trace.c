@@ -1,23 +1,24 @@
+#define _POSIX_C_SOURCE 200112L
 #include "trace.h"
 
-#include <netinet/ip_icmp.h>
-#include <sys/time.h>
 #include <arpa/inet.h>
 #include <netdb.h>
+#include <netinet/ip_icmp.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/time.h>
 #include <unistd.h>
 
 #define PACKET_SIZE 64
 #define WORD_LENGTH_IN_BYTES 16
 
-static void send_packet(const int sock, const struct icmphdr* icmp_hdr, const struct sockaddr_in* destAddr);
-static void recv_packet(const int sock, char* packet, struct sockaddr_in* replyAddr);
+static int send_packet(const int sock, const struct icmphdr* icmp_hdr, const struct sockaddr_in* destAddr);
+static int recv_packet(const int sock, char* packet, struct sockaddr_in* replyAddr);
 static int create_socket(struct Options options);
 static uint16_t calculate_checksum(void* buffer, uint16_t length);
-static void fill_header(struct icmphdr* icmph, const uint8_t ttl);
+static int fill_header(struct icmphdr* icmph, const uint8_t ttl);
 static struct sockaddr_in resolve_host(const char* dst);
-static double calc_time_diff_ms(struct timeval *start, struct timeval *end);
+static double calc_time_diff_ms(struct timeval* start, struct timeval* end);
 
 void trace(struct Options options) {
     int sock = create_socket(options);
@@ -28,15 +29,22 @@ void trace(struct Options options) {
         struct sockaddr_in replyAddr;
         char packet[PACKET_SIZE];
 
-        fill_header(&icmp_hdr, ttl);
+        if (fill_header(&icmp_hdr, ttl) < 0) {
+            perror("Failed to fill icmp header");
+            continue;
+        }
         setsockopt(sock, IPPROTO_IP, IP_TTL, &ttl, sizeof(ttl));
 
         gettimeofday(&startTime, NULL);
-        send_packet(sock, &icmp_hdr, &destAddr);
-        recv_packet(sock, packet, &replyAddr);
+        if (send_packet(sock, &icmp_hdr, &destAddr) < 0)
+            perror("Failed to send packet");
+
+        if (recv_packet(sock, packet, &replyAddr) < 0)
+            perror("Failed to receive packet");
+
         gettimeofday(&endTime, NULL);
 
-        printf("%3d\t%-15s\t%3.fms\n",ttl ,inet_ntoa(replyAddr.sin_addr), calc_time_diff_ms(&startTime, &endTime));
+        printf("%3d\t%-15s\t%3.fms\n", ttl, inet_ntoa(replyAddr.sin_addr), calc_time_diff_ms(&startTime, &endTime));
         if (replyAddr.sin_addr.s_addr == destAddr.sin_addr.s_addr) {
             break;
         }
@@ -44,9 +52,10 @@ void trace(struct Options options) {
     close(sock);
 }
 
-static void fill_header(struct icmphdr* icmph, const uint8_t ttl) {
-    if (icmph == NULL) {
+static int fill_header(struct icmphdr* icmph, const uint8_t ttl) {
+    if (!icmph) {
         perror("ICMP header pointer is null");
+        return -1;
     }
 
     memset(icmph, 0, sizeof(*icmph));
@@ -56,6 +65,7 @@ static void fill_header(struct icmphdr* icmph, const uint8_t ttl) {
     icmph->un.echo.id = (uint16_t)getpid();
     icmph->un.echo.sequence = ttl;
     icmph->checksum = calculate_checksum(icmph, sizeof(*icmph));
+    return 0;
 }
 
 static uint16_t calculate_checksum(void* buffer, uint16_t length) {
@@ -77,6 +87,12 @@ static uint16_t calculate_checksum(void* buffer, uint16_t length) {
 }
 
 static struct sockaddr_in resolve_host(const char* dest) {
+    if (!dest) {
+        perror("Provided NULL dst to resolve");
+        struct sockaddr_in addr = {0};
+        return addr;
+    }
+
     struct addrinfo hints = {0}, *result;
     hints.ai_family = AF_INET;
     hints.ai_socktype = SOCK_STREAM;
@@ -91,22 +107,26 @@ static struct sockaddr_in resolve_host(const char* dest) {
     return destAddr;
 }
 
-static void send_packet(const int sock, const struct icmphdr* icmp_hdr, const struct sockaddr_in* destAddr) {
+static int send_packet(const int sock, const struct icmphdr* icmp_hdr, const struct sockaddr_in* destAddr) {
+    if (!icmp_hdr || !destAddr) return -1;
+
     int pack_bytes = sendto(sock, icmp_hdr, sizeof(*icmp_hdr), 0,
                             (struct sockaddr*)destAddr, sizeof(*destAddr));
 
-    if (pack_bytes < 0) {
-        perror("Sendto");
-        return;
-    }
+    if (pack_bytes < 0) return -1;
+
+    return 0;
 }
 
-static void recv_packet(const int socketFileDescriptor, char* packet, struct sockaddr_in* replyAddress) {
+static int recv_packet(const int socketFileDescriptor, char* packet, struct sockaddr_in* replyAddress) {
+    if (!packet || !replyAddress) return -1;
     socklen_t addrLen = sizeof(*replyAddress);
     if (recvfrom(socketFileDescriptor, packet, PACKET_SIZE, 0, (struct sockaddr*)replyAddress,
                  &addrLen) == -1) {
         perror("Recvfrom");
+        return -1;
     }
+    return 0;
 }
 
 static int create_socket(struct Options options) {
@@ -121,7 +141,7 @@ static int create_socket(struct Options options) {
     return sock;
 }
 
-static double calc_time_diff_ms(struct timeval *start, struct timeval *end){
+static double calc_time_diff_ms(struct timeval* start, struct timeval* end) {
     double start_ms = (start->tv_sec * 1000.0) + (start->tv_usec / 1000.0);
     double end_ms = (end->tv_sec * 1000.0) + (end->tv_usec / 1000.0);
     return end_ms - start_ms;
